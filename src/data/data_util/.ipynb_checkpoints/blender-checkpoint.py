@@ -92,10 +92,12 @@ def load_blender_data(
             # else:
             fname0 = os.path.join(basedir, frame['file_path'])
             if s =="train":
-                fname1 = os.path.join(basedir, "HAZE/haze_level_1_dark_channel", frame['file_path'].split('/')[-1])
-                print(fname1)
+                fname1 = os.path.join(basedir, "HAZE/haze_level_2_PromptIR", frame['file_path'].split('/')[-1])
+            
+            #     print(fname1)
             else:
                 fname1 = os.path.join(basedir, frame['file_path'])
+           
 
             imgs0.append(imageio.imread(fname0))
             imgs1.append(imageio.imread(fname1))   

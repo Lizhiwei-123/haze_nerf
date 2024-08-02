@@ -114,42 +114,42 @@ class NeRFMLP(nn.Module):
         raw_rgb_2 = self.rgb_layer_2(x).reshape(-1, num_samples, self.num_rgb_channels)
         return raw_rgb_1,raw_rgb_2, raw_density
 
-class LossNetwork(nn.Module):
-    def __init__(self, vgg_model):
-        super(LossNetwork, self).__init__()
-        self.vgg_layers = vgg_model
-        self.layer_name_mapping = {
-            '3': "relu1_2",
-            '8': "relu2_2",
-            '15': "relu3_3"
-        }
+# class LossNetwork(nn.Module):
+#     def __init__(self, vgg_model):
+#         super(LossNetwork, self).__init__()
+#         self.vgg_layers = vgg_model
+#         self.layer_name_mapping = {
+#             '3': "relu1_2",
+#             '8': "relu2_2",
+#             '15': "relu3_3"
+#         }
 
-    def output_features(self, x):
-        output = {}
-        for name, module in self.vgg_layers._modules.items():
-            x = module(x)
-            if name in self.layer_name_mapping:
-                output[self.layer_name_mapping[name]] = x
-        return list(output.values())
+#     def output_features(self, x):
+#         output = {}
+#         for name, module in self.vgg_layers._modules.items():
+#             x = module(x)
+#             if name in self.layer_name_mapping:
+#                 output[self.layer_name_mapping[name]] = x
+#         return list(output.values())
 
-    def forward(self, pred_im, gt):
-        loss = []
-        pred_im_features = self.output_features(pred_im)
-        gt_features = self.output_features(gt)
-        for pred_im_feature, gt_feature in zip(pred_im_features, gt_features):
-            loss.append(F.mse_loss(pred_im_feature, gt_feature))
+#     def forward(self, pred_im, gt):
+#         loss = []
+#         pred_im_features = self.output_features(pred_im)
+#         gt_features = self.output_features(gt)
+#         for pred_im_feature, gt_feature in zip(pred_im_features, gt_features):
+#             loss.append(F.mse_loss(pred_im_feature, gt_feature))
 
-        return sum(loss)/len(loss)
+#         return sum(loss)/len(loss)
         
-        # Loss & Optimizer Setting & Metric
-        vgg_model = vgg16(pretrained=True).features[:16]
-        vgg_model = vgg_model.cuda()
+#         # Loss & Optimizer Setting & Metric
+#         vgg_model = vgg16(pretrained=True).features[:16]
+#         vgg_model = vgg_model.cuda()
 
-        for param in vgg_model.parameters():
-            param.requires_grad = False
+#         for param in vgg_model.parameters():
+#             param.requires_grad = False
 
-        loss_network = LossNetwork(vgg_model)
-        loss_network.eval()    
+#         loss_network = LossNetwork(vgg_model)
+#         loss_network.eval()    
 
 @gin.configurable()
 class NeRF(nn.Module):
@@ -175,12 +175,13 @@ class NeRF(nn.Module):
         self.sigma_activation = nn.ReLU()
         self.coarse_mlp = NeRFMLP(min_deg_point, max_deg_point, deg_view)
         self.fine_mlp = NeRFMLP(min_deg_point, max_deg_point, deg_view)
-        # self.A = nn.Parameter(torch.FloatTensor([0.2, 0.2, 0.2]), requires_grad=True)
-        # self.B = nn.Parameter(torch.FloatTensor([1e-5]), requires_grad=True)
+        self.A = nn.Parameter(torch.FloatTensor([0.2, 0.2, 0.2]), requires_grad=True)
+        
+        self.B = nn.Parameter(torch.FloatTensor([1e-5]), requires_grad=True)
         
         
     def forward(self, rays, randomized, white_bkgd, near, far):
-
+        print(f"A: {self.A}, B: {self.B}")
         ret = []
         for i_level in range(self.num_levels):
             if i_level == 0:
@@ -233,9 +234,9 @@ class NeRF(nn.Module):
                 
                 
             )
-            # t = torch.exp(-self.B * depth)
-            # t_expanded = t.unsqueeze(-1)
-            # comp_rgb_aug = (comp_rgb_1 - self.A * (1 -  t_expanded)) / t_expanded
+            t = torch.exp(-self.B * depth)
+            t_expanded = t.unsqueeze(-1)
+            comp_rgb_aug = (comp_rgb_1 - self.A * (1 -  t_expanded)) / t_expanded
             # print(comp_rgb_aug)
             
             comp_rgb_2, acc, weights,_ = helper.volumetric_rendering(
@@ -245,8 +246,8 @@ class NeRF(nn.Module):
                 rays["rays_d"],
                 white_bkgd=white_bkgd,
             )
-            # ret.append((comp_rgb_1,comp_rgb_2,comp_rgb_aug ,acc,depth))
-            ret.append((comp_rgb_1,comp_rgb_2 ,acc,depth))
+            ret.append((comp_rgb_1,comp_rgb_2,comp_rgb_aug ,acc,depth))
+           
         
         return ret
 
@@ -260,6 +261,7 @@ class LitNeRF(LitModel):
         lr_delay_steps: int = 2500,
         lr_delay_mult: float = 0.01,
         randomized: bool = True,
+        # B_init: float = 1e-5
     ):
         for name, value in vars().items():
             if name not in ["self", "__class__"]:
@@ -267,6 +269,7 @@ class LitNeRF(LitModel):
 
         super(LitNeRF, self).__init__()
         self.model = NeRF()
+        # self.B = nn.Parameter(torch.FloatTensor([B_init]), requires_grad=True)
         
         
         
@@ -287,14 +290,13 @@ class LitNeRF(LitModel):
         rgb_fine_water = rendered_results[1][0]
         rgb_coarse_enhance = rendered_results[0][1]
         rgb_fine_enhance = rendered_results[1][1]
-        # rgb_coarse_aug = rendered_results[0][2]
-        # rgb_fine_aug = rendered_results[1][2]
-        # depth_coarse = rendered_results[0][-1]
-        # depth_fine = rendered_result11s[1][-1]
+        rgb_coarse_aug = rendered_results[0][2]
+        rgb_fine_aug = rendered_results[1][2]
+        depth_coarse = rendered_results[0][-1]
+        depth_fine = rendered_results[1][-1]
         target0 = batch["target0"]
         target1 = batch["target1"]
-        # t_coarse = torch.exp(-self.B * depth_coarse)
-        # t_fine = torch.exp(-self.B * depth_fine)
+        
         # epsilon = 1e-10
         # A_expanded = self.A
         # A_expanded = self.A.view(1, 1, 3).expand(rgb_coarse_water.size(0), 1, 3)
@@ -333,11 +335,11 @@ class LitNeRF(LitModel):
         loss_coarse_enhance = helper.img2mse(rgb_coarse_enhance, target1)
         loss_fine_enhance = helper.img2mse(rgb_fine_enhance, target1)
         
-        # loss_coarse_aug = helper.img2mse(rgb_coarse_aug,rgb_coarse_enhance)
-        # loss_fine_aug = helper.img2mse(rgb_fine_aug,rgb_fine_enhance)
+        loss_coarse_aug = helper.img2mse(rgb_coarse_aug,rgb_coarse_enhance)
+        loss_fine_aug = helper.img2mse(rgb_fine_aug,rgb_fine_enhance)
         
-        # loss = loss_coarse_water + loss_fine_water + loss_coarse_enhance + loss_fine_enhance + 0.1 * loss_coarse_aug + 0.1 * loss_fine_aug
-        loss = loss_coarse_water + loss_fine_water + loss_coarse_enhance + loss_fine_enhance 
+        loss = loss_coarse_water + loss_fine_water + loss_coarse_enhance + loss_fine_enhance + 0.1 * loss_coarse_aug + 0.1 * loss_fine_aug
+        
 
         psnr_coarse_water = helper.mse2psnr(loss_coarse_water)
         psnr_fine_water = helper.mse2psnr(loss_fine_water)
@@ -359,16 +361,19 @@ class LitNeRF(LitModel):
         )
         rgb_fine_water = rendered_results[1][0]
         rgb_fine_enhance = rendered_results[1][1]
+        rgb_fine_aug = rendered_results[1][2]
         target0 = batch["target0"]
         target1 = batch["target1"]
         ret["target0"] = target0
         ret["target1"] = target1
         ret["rgb_fine_water"] = rgb_fine_water
         ret["rgb_fine_enhance"] = rgb_fine_enhance
+        ret["rgb_fine_aug"] = rgb_fine_aug
         
         return {
             "rgb_fine_water": rgb_fine_water,
             "rgb_fine_enhance": rgb_fine_enhance,
+            "rgb_fine_aug" : rgb_fine_aug,
             "target0": target0,
             "target1": target1
         }
@@ -418,8 +423,10 @@ class LitNeRF(LitModel):
         val_image_sizes = self.trainer.datamodule.val_image_sizes
         rgbs_water = self.alter_gather_cat(outputs, "rgb_fine_water", val_image_sizes)
         rgbs_enhance = self.alter_gather_cat(outputs, "rgb_fine_enhance", val_image_sizes)
+        rgbs_aug = self.alter_gather_cat(outputs, "rgb_fine_aug", val_image_sizes)
         targets_water = self.alter_gather_cat(outputs, "target0", val_image_sizes)
         targets_enhance = self.alter_gather_cat(outputs, "target1", val_image_sizes)
+       
         psnr_mean_water = self.psnr_each(rgbs_water, targets_water).mean()
         psnr_mean_enhance = self.psnr_each(rgbs_enhance, targets_enhance).mean()
         ssim_mean_water = self.ssim_each(rgbs_water, targets_water).mean()
@@ -447,6 +454,7 @@ class LitNeRF(LitModel):
         )
         rgbs_water = self.alter_gather_cat(outputs, "rgb_fine_water", all_image_sizes)
         rgbs_enhance = self.alter_gather_cat(outputs, "rgb_fine_enhance", all_image_sizes)
+        rgbs_aug = self.alter_gather_cat(outputs, "rgb_fine_aug", all_image_sizes)
         targets_water = self.alter_gather_cat(outputs, "target0", all_image_sizes)
         targets_enhance = self.alter_gather_cat(outputs, "target1", all_image_sizes)
         psnr_water = self.psnr(rgbs_water, targets_water, dmodule.i_train, dmodule.i_val, dmodule.i_test)
@@ -466,8 +474,10 @@ class LitNeRF(LitModel):
         if self.trainer.is_global_zero:
             water_dir = os.path.join(self.logdir, "render_model/water")
             enhance_dir = os.path.join(self.logdir, "render_model/enhance")
+            aug_dir = os.path.join(self.logdir, "render_model/aug")
             store_image(water_dir, rgbs_water)
             store_image(enhance_dir, rgbs_enhance)
+            store_image(aug_dir , rgbs_aug)
             water_dir = os.path.join(self.logdir, "render_video/water")
             enhance_dir = os.path.join(self.logdir, "render_video/enhance")
             store_video(water_dir, rgbs_water)
